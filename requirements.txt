@@ -3,4 +3,4 @@ uvicorn
 chromadb
 requests
 python-dotenv
-sentence-transformers
+fastembed
