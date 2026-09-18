@@ -10,12 +10,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
+# ===== Локальная модель для эмбеддингов (замена DeepSeek) =====
+from sentence_transformers import SentenceTransformer
+
 # ===== Загрузка переменных окружения =====
 load_dotenv()
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/v1/chat/completions"
-DEEPSEEK_EMBED_URL = "https://api.deepseek.com/v1/embeddings"
 
 # ===== Логирование =====
 logging.basicConfig(level=logging.INFO)
@@ -72,47 +74,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===== ChromaDB (персистентная база) =====
+# ===== ChromaDB =====
 CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
 client = chromadb.PersistentClient(path=CHROMA_PATH)
 collection = client.get_or_create_collection(name="knowledge")
 
+# ===== Локальная модель эмбеддингов =====
+# Мультиязычная, лёгкая (~120 МБ), работает на CPU
+embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
 
 # ===== Модели данных =====
 class Message(BaseModel):
-    role: str      # "user" или "assistant"
+    role: str
     content: str
-
 
 class ChatRequest(BaseModel):
     messages: list[Message]
 
-
-# ===== Хэш файла знаний (чтобы не пересобирать зря) =====
+# ===== Хэш файла знаний =====
 def file_hash(path: Path) -> str:
     if not path.exists():
         return ""
     return hashlib.md5(path.read_bytes()).hexdigest()
 
-
-# ===== Embeddings через DeepSeek =====
+# ===== Эмбеддинги (локально, без API) =====
 def get_embedding(text: str) -> list:
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {"model": "deepseek-embedding-v1", "input": text}
-    response = requests.post(
-        DEEPSEEK_EMBED_URL, headers=headers, json=payload, timeout=30
-    )
-    response.raise_for_status()
-    return response.json()["data"][0]["embedding"]
-
+    """Получает векторное представление текста локальной моделью."""
+    embedding = embedding_model.encode(text)
+    return embedding.tolist()
 
 # ===== Загрузка базы знаний =====
 def load_knowledge():
-    """Загружает knowledge.txt в ChromaDB. Пересобирает, если файл изменился."""
-    global collection  # ← объявляем global в самом начале функции
+    global collection
 
     knowledge_file = Path("knowledge.txt")
     if not knowledge_file.exists():
@@ -122,12 +115,10 @@ def load_knowledge():
     current_hash = file_hash(knowledge_file)
     hash_file = Path(CHROMA_PATH) / "knowledge.hash"
 
-    # Если хэш совпадает — ничего не делаем
     if hash_file.exists() and hash_file.read_text().strip() == current_hash:
         logger.info(f"База актуальна: {collection.count()} чанков")
         return
 
-    # Иначе — чистим и загружаем заново
     logger.info("Обновляю базу знаний...")
     try:
         client.delete_collection("knowledge")
@@ -153,7 +144,6 @@ def load_knowledge():
     hash_file.write_text(current_hash)
     logger.info(f"Загружено {len(chunks)} чанков.")
 
-
 # ===== Поиск в базе =====
 def search_knowledge(question: str, n_results: int = 4) -> str:
     if collection.count() == 0:
@@ -171,24 +161,19 @@ def search_knowledge(question: str, n_results: int = 4) -> str:
         logger.error(f"Ошибка поиска: {e}")
         return ""
 
-
 # ===== Эндпоинты =====
 @app.on_event("startup")
 async def startup():
     load_knowledge()
 
-
 @app.get("/health")
 async def health():
     return {"status": "ok", "chunks": collection.count()}
 
-
 @app.post("/reload")
 async def reload_knowledge():
-    """Принудительно пересобрать базу (если правил knowledge.txt)."""
     load_knowledge()
     return {"status": "reloaded", "chunks": collection.count()}
-
 
 @app.post("/ask")
 async def ask(req: ChatRequest):
@@ -198,7 +183,6 @@ async def ask(req: ChatRequest):
     if not req.messages:
         raise HTTPException(status_code=400, detail="No messages")
 
-    # Последний вопрос пользователя
     last_user_message = ""
     for m in reversed(req.messages):
         if m.role == "user":
@@ -209,10 +193,8 @@ async def ask(req: ChatRequest):
         raise HTTPException(status_code=400, detail="Empty question")
 
     try:
-        # Ищем контекст по последнему вопросу
         context = search_knowledge(last_user_message)
 
-        # Собираем сообщения для DeepSeek
         deepseek_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
         if context:
@@ -249,7 +231,6 @@ async def ask(req: ChatRequest):
     except Exception as e:
         logger.error(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 if __name__ == "__main__":
     import uvicorn
