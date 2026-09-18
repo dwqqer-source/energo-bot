@@ -10,8 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# ===== Локальная модель для эмбеддингов (замена DeepSeek) =====
-from sentence_transformers import SentenceTransformer
+# ===== FastEmbed вместо sentence-transformers =====
+from fastembed import TextEmbedding
 
 # ===== Загрузка переменных окружения =====
 load_dotenv()
@@ -79,9 +79,9 @@ CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
 client = chromadb.PersistentClient(path=CHROMA_PATH)
 collection = client.get_or_create_collection(name="knowledge")
 
-# ===== Локальная модель эмбеддингов =====
-# Мультиязычная, лёгкая (~120 МБ), работает на CPU
-embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+# ===== Модель FastEmbed (лёгкая, ONNX) =====
+# Используем ту же модель, что и раньше, но через ONNX Runtime
+embedding_model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
 # ===== Модели данных =====
 class Message(BaseModel):
@@ -97,10 +97,11 @@ def file_hash(path: Path) -> str:
         return ""
     return hashlib.md5(path.read_bytes()).hexdigest()
 
-# ===== Эмбеддинги (локально, без API) =====
+# ===== Эмбеддинги (FastEmbed) =====
 def get_embedding(text: str) -> list:
-    """Получает векторное представление текста локальной моделью."""
-    embedding = embedding_model.encode(text)
+    """Получает векторное представление текста через FastEmbed."""
+    # FastEmbed возвращает итератор, берём первый элемент
+    embedding = list(embedding_model.embed([text]))[0]
     return embedding.tolist()
 
 # ===== Загрузка базы знаний =====
