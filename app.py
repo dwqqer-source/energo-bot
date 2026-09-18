@@ -73,15 +73,16 @@ app.add_middleware(
 )
 
 # ===== ChromaDB (персистентная база) =====
-# На Railway смонтируй volume в /data — тогда база переживёт перезапуск
 CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
 client = chromadb.PersistentClient(path=CHROMA_PATH)
 collection = client.get_or_create_collection(name="knowledge")
+
 
 # ===== Модели данных =====
 class Message(BaseModel):
     role: str      # "user" или "assistant"
     content: str
+
 
 class ChatRequest(BaseModel):
     messages: list[Message]
@@ -111,6 +112,8 @@ def get_embedding(text: str) -> list:
 # ===== Загрузка базы знаний =====
 def load_knowledge():
     """Загружает knowledge.txt в ChromaDB. Пересобирает, если файл изменился."""
+    global collection  # ← объявляем global в самом начале функции
+
     knowledge_file = Path("knowledge.txt")
     if not knowledge_file.exists():
         logger.warning("knowledge.txt не найден. База будет пустой.")
@@ -130,7 +133,7 @@ def load_knowledge():
         client.delete_collection("knowledge")
     except Exception:
         pass
-    global collection
+
     collection = client.get_or_create_collection(name="knowledge")
 
     content = knowledge_file.read_text(encoding="utf-8")
